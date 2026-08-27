@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的世界存档转换器</title>
+  <link rel="icon" href="../assets/app-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="viewport">
+    <div class="panel" id="panel">
+      <header class="panel-header">
+        <div class="header-left">
+          <h1 class="title" id="title">选择世界</h1>
+          <p class="subtitle" id="subtitle">请选择你的世界文件夹或存档压缩包。</p>
+        </div>
+
+        <div class="stepper" aria-hidden="true">
+          <div class="step" id="st1">
+            <div class="hex-bg"></div>
+            <div class="hex-core">
+              <svg class="hex-icon" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg">
+                <rect width="12" height="12" fill="#1B1B1B"/>
+                <rect x="1" y="1" width="10" height="3" fill="#2E2E2E"/>
+                <rect x="1" y="1" width="10" height="1" fill="#4D4D4D"/>
+                <rect x="4" y="4" width="4" height="2" fill="#4D4D4D"/>
+                <rect x="4" y="6" width="4" height="1" fill="#6E6E6E"/>
+                <rect x="2" y="8" width="8" height="3" fill="#2E2E2E"/>
+                <rect x="1" y="2" width="2" height="1" fill="#8F8F8F"/>
+                <rect x="9" y="2" width="2" height="1" fill="#8F8F8F"/>
+              </svg>
+            </div>
+          </div>
+          <div class="connector" id="c1"></div>
+          <div class="step" id="st2">
+            <div class="hex-bg"></div>
+            <div class="hex-core">
+              <svg class="hex-icon" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg">
+                <rect width="12" height="12" fill="#6C3483"/>
+                <rect x="1" y="1" width="10" height="10" fill="#9B59B6"/>
+                <rect x="2" y="2" width="8" height="8" fill="#D2B4DE"/>
+                <rect x="3" y="3" width="6" height="6" fill="#9B59B6"/>
+                <rect x="4" y="4" width="4" height="4" fill="#C0392B"/>
+                <rect x="5" y="5" width="2" height="2" fill="#5D4037"/>
+              </svg>
+            </div>
+          </div>
+          <div class="connector" id="c2"></div>
+          <div class="step" id="st3">
+            <div class="hex-bg"></div>
+            <div class="hex-core">
+              <svg class="hex-icon" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg">
+                <rect width="12" height="12" fill="#202020"/>
+                <rect x="1" y="1" width="10" height="10" fill="#7F7F7F"/>
+                <rect x="2" y="2" width="8" height="2" fill="#A5A5A5"/>
+                <rect x="4" y="6" width="4" height="4" fill="#202020"/>
+                <rect x="5" y="7" width="2" height="3" fill="#FF9800"/>
+                <rect x="6" y="8" width="1" height="2" fill="#FFD54F"/>
+              </svg>
+            </div>
+          </div>
+          <div class="connector" id="c3"></div>
+          <div class="step" id="st4">
+            <div class="hex-bg"></div>
+            <div class="hex-core">
+              <svg class="hex-icon" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg">
+                <rect width="12" height="12" fill="#7B241C"/>
+                <rect x="1" y="1" width="10" height="8" fill="#B03A2E"/>
+                <rect x="2" y="2" width="8" height="3" fill="#E74C3C"/>
+                <rect x="4" y="4" width="4" height="4" fill="#27AE60"/>
+                <rect x="5" y="5" width="2" height="2" fill="#1E8449"/>
+                <rect x="1" y="9" width="10" height="2" fill="#34495E"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="divider"></div>
+
+      <main class="content" id="content"></main>
+
+      <div class="button-bar" id="buttonBar"></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay" hidden>
+    <div class="overlay-panel">
+      <h2 class="overlay-title" id="overlayTitle"></h2>
+      <div class="overlay-body" id="overlayBody"></div>
+      <div class="overlay-actions">
+        <button type="button" class="btn btn-primary" id="overlayClose">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

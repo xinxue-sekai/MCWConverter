@@ -1,0 +1,19 @@
+# -*- coding: utf-8 -*-
+# 运行时依赖（均已在本会话的 conversion/ 目录验证）
+#
+# 注意：
+#  - numpy 必须锁定 1.26.4：amulet-nbt 按 numpy 1.26 ABI 编译，2.x 会二进制崩溃
+#  - amulet-core==1.9.44 的硬依赖 amulet-rocksdb 是 C++ 扩展（需 MSVC 编译），
+#    纯 pip 安装会失败；请以 `pip install --no-deps amulet-core==1.9.44` 单独安装，
+#    并由 backend/rocksdb_stub 纯 Python 占位包替代该依赖。
+#  - pywebview 仅用于 GUI 入口（run.py）。
+numpy==1.26.4
+amulet-core==1.9.44
+amulet-nbt==2.1.8
+amulet-leveldb==1.0.7
+amulet-mutf8==1.0.7
+pymctranslate==1.2.47
+lz4==4.4.5
+portalocker==4.2.0
+platformdirs==4.11.4
+pywebview==5.4
