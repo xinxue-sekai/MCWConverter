@@ -42,3 +42,6 @@ credentials.*
 .vscode/
 .idea/
 .DS_Store
+
+# 内部文档（个人开发使用，不随仓库公开）
+CONTRIBUTING.md
