@@ -75,7 +75,12 @@ pyinstaller --noconfirm --distpath ..\release --workpath build\work build\MCWCon
 
 ## 贡献
 
-欢迎参与开发。请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，了解开发环境搭建、代码规范、分支策略、提交规范与版本发布流程。
+欢迎提交 Issue 与 Pull Request。请遵循以下约定：
+
+- 注释与 UI 文案使用中文，遵循仓库既有代码风格；
+- 不提交含真实存档名、玩家名或本机绝对路径的内容；
+- 修改 `web/app.js` 后请通过 `node --check web/app.js` 校验语法；
+- 提交信息采用 Conventional Commits 风格（`feat:` / `fix:` / `docs:` 等）。
 
 ## 免责声明
 
