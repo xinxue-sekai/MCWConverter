@@ -23,12 +23,53 @@ import tempfile
 #: 网易加密魔数（文件头 4 字节）
 MAGIC = bytes([0x80, 0x1D, 0x30, 0x01])
 
+#: 流式解密的块大小：既能压住峰值内存，又不会把调用次数拉太高
+CHUNK = 256 * 1024
+
 
 def xor_bytes(data, key):
-    """循环密钥异或。"""
+    """循环密钥异或。
+
+    用大整数一次性异或代替逐字节循环；大文件走 ``_decrypt_file_inplace``。
+    """
     if not key:
         raise ValueError("empty xor key")
-    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+    data = bytes(data)
+    if not data:
+        return b""
+    klen = len(key)
+    repeats = (len(data) + klen - 1) // klen
+    stream = (key * repeats)[: len(data)]
+    mixed = int.from_bytes(data, "big") ^ int.from_bytes(stream, "big")
+    return mixed.to_bytes(len(data), "big")
+
+
+def _decrypt_file_inplace(path, key, magic_len):
+    """去掉头部魔数后分块异或，写临时文件再原子替换。
+
+    内存只跟 ``CHUNK`` 有关；写临时文件再原子替换，中途失败不留半个明文。
+    """
+    klen = len(key)
+    tmp_path = path + ".mcwdec"
+    offset = 0
+    try:
+        with open(path, "rb") as src, open(tmp_path, "wb") as dst:
+            src.seek(magic_len)
+            while True:
+                chunk = src.read(CHUNK)
+                if not chunk:
+                    break
+                start = offset % klen
+                rotated = key[start:] + key[:start]
+                dst.write(xor_bytes(chunk, rotated))
+                offset += len(chunk)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def optimize_key(key):
@@ -86,10 +127,9 @@ def decrypt_db(db_dir, progress_cb=None):
     for i, name in enumerate(files):
         fp = os.path.join(db_dir, name)
         with open(fp, "rb") as fh:
-            data = fh.read()
-        if len(data) >= 4 and data[:4] == MAGIC:
-            with open(fp, "wb") as fh:
-                fh.write(xor_bytes(data[4:], key))
+            head = fh.read(len(MAGIC))
+        if len(head) == len(MAGIC) and head == MAGIC:
+            _decrypt_file_inplace(fp, key, len(MAGIC))
             decrypted += 1
         else:
             kept += 1
