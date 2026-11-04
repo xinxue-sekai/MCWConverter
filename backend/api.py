@@ -96,9 +96,27 @@ def _find_world_root(base_dir):
             candidates.append(root)
 
     if candidates:
-        # 返回层级最深（路径最长）的候选，通常就是实际世界根目录
-        return max(candidates, key=lambda p: len(p.replace(base_dir, "").split(os.sep)))
+        return max(candidates, key=lambda p: _world_root_rank(p, base_dir))
     return base_dir
+
+
+def _world_root_rank(candidate, base_dir):
+    """给世界根候选排序，返回可直接比较的元组。
+
+    依次比较：层级深度 → 是否带 level.dat → 相对路径字典序。
+    - 深度用 os.path.relpath 算，不再用字符串 replace（目录名里恰好含
+      基目录字样时会被错误替换，层级算歪）。
+    - 同层并列时优先带 level.dat 的那个；仍然并列就按路径字典序，
+      保证同样的输入在任何文件系统顺序下都选出同一个结果。
+    """
+    try:
+        rel = os.path.relpath(os.path.abspath(candidate), os.path.abspath(base_dir))
+    except ValueError:  # 理论上不会发生（候选都来自 base_dir 下的 walk）
+        rel = candidate
+    parts = [part for part in rel.split(os.sep) if part not in ("", ".")]
+    has_level_dat = os.path.isfile(os.path.join(candidate, "level.dat"))
+    return (len(parts), has_level_dat, rel)
+
 
 
 class ConverterApi:
