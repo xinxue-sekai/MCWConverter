@@ -38,7 +38,7 @@ jobs:
         run: |
           set -e
           gh pr list --state open --json number,headRefName,isDraft,title,author \
-            --jq '.[] | select(.author.login == "xinxue-sekai") | select(.headRefName | startswith("triage/")) | "\(.number)\t\(.isDraft)\t\(.title)"' \
+            --jq '.[] | select(.author.login == "xinxue-sekai" or .author.login == "github-actions[bot]") | select(.headRefName | startswith("triage/")) | "\(.number)\t\(.isDraft)\t\(.title)"' \
             > /tmp/prs.tsv || true
           : > /tmp/merged.txt
           while IFS=$'\t' read -r n draft title; do

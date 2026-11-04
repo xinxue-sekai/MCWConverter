@@ -1,0 +1,95 @@
+name: 自动建 PR 并收尾（triage 分支推送触发）
+
+# 触发时机：本流程把修复推到 triage/* 分支时。
+# 动作：建 PR → squash 合并 → 发下一个源码版本 → 回复并关闭对应 issue。
+# 分支名必须是 triage/issue-<n> 形式，commit 标题必须含 (#<issue号>)，否则不会回 issue。
+
+on:
+  push:
+    branches: ["triage/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: auto-finalize
+  cancel-in-progress: false
+
+jobs:
+  ship:
+    if: "!contains(github.event.head_commit.message, '[skip-finalize]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 建 PR 并 squash 合并
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          SUBJECT="$(git log -1 --format=%s)"
+          echo "branch=$BRANCH title=$SUBJECT"
+          if [ "$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')" != "0" ]; then
+            NUM=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          else
+            URL=$(gh pr create --head "$BRANCH" --base main --title "$SUBJECT" \
+              --body "自动修复，来自分支 ${BRANCH}。" </dev/null)
+            NUM=$(printf '%s' "$URL" | grep -oE '[0-9]+$' | tail -1)
+          fi
+          [ -n "$NUM" ] || { echo "拿不到 PR 号"; exit 1; }
+          gh pr merge "$NUM" --squash </dev/null
+          git push origin --delete "$BRANCH" >/dev/null 2>&1 || true
+          echo "title=$SUBJECT" >> "$GITHUB_OUTPUT"
+
+      - name: 同步 main 并计算版本号
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          git fetch origin main --tags --force >/dev/null 2>&1
+          git checkout main >/dev/null 2>&1
+          git reset --hard origin/main >/dev/null
+          prev=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          case "$prev" in
+            v[0-9]*.[0-9]*.[0-9]*)
+              rest=${prev#v}; major=${rest%%.*}; t=${rest#*.}; minor=${t%%.*}; patch=${t##*.}
+              next="v${major}.${minor}.$((patch+1))" ;;
+            *) next="v1.0.1" ;;
+          esac
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: 发新版本（源码 tag，不含 exe）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          next='${{ steps.ver.outputs.next }}'
+          title='${{ steps.pr.outputs.title }}'
+          gh release view "$next" >/dev/null 2>&1 && { echo "$next 已存在，跳过"; exit 0; }
+          { echo "## 本次更新"; echo; echo "- $title"; echo;
+            echo "源码包由 GitHub 自动生成；本次发行不含重新打包的 exe。"; } > /tmp/notes.md
+          gh release create "$next" --target main --title "$next" --notes-file /tmp/notes.md </dev/null
+
+      - name: 回复并关闭对应 issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          title='${{ steps.pr.outputs.title }}'
+          marker="自动修复已合入 main"
+          printf '%s' "$title" | grep -oE '#[0-9]+' | tr -d '#' | sort -un > /tmp/issues.txt || true
+          [ -s /tmp/issues.txt ] || { echo "标题里没有 issue 号，跳过回复"; exit 0; }
+          while read -r n; do
+            [ -z "$n" ] && continue
+            gh issue comment "$n" --body "$marker，改动已随自动版本发布，本 issue 一并关闭。" </dev/null || true
+            gh issue close "$n" --reason completed </dev/null || true
+          done < /tmp/issues.txt
