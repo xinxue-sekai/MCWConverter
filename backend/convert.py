@@ -23,6 +23,9 @@ from .decrypt import decrypt
 #: Java 目标版本偏好（优先级从高到低，均为实测安全的旧式布局版本）
 JAVA_PREFERRED = [(1, 20, 4), (1, 21, 4), (1, 21, 1), (1, 20, 1), (1, 19, 4)]
 
+#: 新式「维度目录」布局的 DataVersion 分界（如 26.x）；此后的版本写不进区块
+NEW_LAYOUT_FROM = 4786
+
 
 def parse_version(value):
     """把版本号（None / "1.20.4" / (1,20,4) / [1,20,4]）规范化为元组。"""
@@ -94,7 +97,23 @@ def choose_version(tm, platform="java", version_number=None):
     for v in JAVA_PREFERRED:
         if v in available:
             return v
-    return max(available)
+
+    # 兜底：不能无脑取 max(available)——最大的版本往往是新式维度布局
+    # （DataVersion >= 4786），引擎在里面写不进区块，等于选了个必然失败的版本。
+    safe = []
+    for v in available:
+        try:
+            if tm.get_version(platform, v).data_version >= NEW_LAYOUT_FROM:
+                continue
+        except Exception:
+            pass
+        safe.append(v)
+    if not safe:
+        raise ValueError(
+            f"{platform} 侧没有可供转换引擎写入的版本（都是新式维度布局）；"
+            "请手动指定版本，或改用 Java 1.20.4 这类旧式布局目标"
+        )
+    return max(safe)
 
 
 def convert(decrypted_dir, out_path, version_number=None, progress_cb=None):
