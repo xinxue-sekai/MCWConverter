@@ -38,21 +38,51 @@ def _rmtree_force(path):
         pass
 
 
+_MEI_MARKER = os.path.join(WORK_ROOT, "mei_last.txt")
+
+
+def _recorded_mei():
+    """读出「上次自己用过的 _MEI 目录」，并做三重校验，不合法一律返回 None。"""
+    try:
+        with open(_MEI_MARKER, "r", encoding="utf-8") as fh:
+            recorded = fh.read().strip()
+    except OSError:
+        return None
+    if not recorded or not os.path.isdir(recorded):
+        return None
+    name = os.path.basename(os.path.abspath(recorded).rstrip("\\/"))
+    if not name.startswith("_MEI"):
+        return None
+    # 只认系统临时目录下的一级子目录，记录被改坏也不会误删别处
+    if os.path.abspath(os.path.dirname(os.path.abspath(recorded))) != os.path.abspath(_SYSTEM_TEMP):
+        return None
+    return os.path.abspath(recorded)
+
+
 def _cleanup_leftover_mei():
-    """启动时清理上次运行残留的 PyInstaller _MEI 临时目录。"""
+    """启动时只清理**自己**上次运行残留的 _MEI 目录（路径记在 work/mei_last.txt）。
+
+    绝不按 `_MEI` 前缀批量扫系统临时目录：那里面可能有别的 PyInstaller 程序
+    正在用的目录，删掉会让对方当场闪退，而且事后查不出是谁干的。
+    """
     if sys.platform != "win32":
         return
     tmp = _SYSTEM_TEMP
     if not tmp or not os.path.isdir(tmp):
         return
     current_mei = getattr(sys, "_MEIPASS", None)
-    for name in os.listdir(tmp):
-        if not name.startswith("_MEI"):
-            continue
-        path = os.path.join(tmp, name)
-        if current_mei and os.path.abspath(path) == os.path.abspath(current_mei):
-            continue
-        _rmtree_force(path)
+    previous = _recorded_mei()
+    if previous:
+        same = current_mei and os.path.abspath(previous) == os.path.abspath(current_mei)
+        if not same:
+            _rmtree_force(previous)
+    if current_mei:
+        try:
+            os.makedirs(WORK_ROOT, exist_ok=True)
+            with open(_MEI_MARKER, "w", encoding="utf-8") as fh:
+                fh.write(os.path.abspath(current_mei))
+        except OSError:
+            pass
 
 
 def _cleanup(api_obj):
