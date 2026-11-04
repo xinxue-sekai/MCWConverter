@@ -1,0 +1,123 @@
+name: 自动收尾（合并修复 / 发版 / 回 issue）
+
+# 触发时机：
+#  - 本流程新建 triage/* PR 时（pull_request opened）→ 立刻自动合并
+#  - 合并后 main 有新提交（push）→ 自动发下一个版本
+#  - 也可在 Actions 页手动 Run workflow
+# 只处理本人开的、分支名 triage/ 开头的 PR，别的 PR 一概不碰。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: auto-finalize
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: "!contains(github.event.head_commit.message, '[skip-finalize]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: 合并本流程开的 PR
+        id: merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          gh pr list --state open --json number,headRefName,isDraft,title,author \
+            --jq '.[] | select(.author.login == "xinxue-sekai") | select(.headRefName | startswith("triage/")) | "\(.number)\t\(.isDraft)\t\(.title)"' \
+            > /tmp/prs.tsv || true
+          : > /tmp/merged.txt
+          while IFS=$'\t' read -r n draft title; do
+            [ -z "$n" ] && continue
+            if [ "$draft" = "true" ]; then
+              gh pr ready "$n" </dev/null || { echo "PR #$n 无法取消草稿，跳过"; continue; }
+            fi
+            if gh pr merge "$n" --squash </dev/null; then
+              echo "$n|$title" >> /tmp/merged.txt
+            else
+              echo "PR #$n 合并失败（可能冲突），跳过"
+            fi
+          done < /tmp/prs.tsv
+          echo "count=$(wc -l < /tmp/merged.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: 计算下一个版本号
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          prev=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          case "$prev" in
+            v[0-9]*.[0-9]*.[0-9]*)
+              rest=${prev#v}; major=${rest%%.*}; t=${rest#*.}; minor=${t%%.*}; patch=${t##*.}
+              next="v${major}.${minor}.$((patch+1))" ;;
+            *) next="v1.0.1" ;;
+          esac
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: 发新版本（源码 tag + 简短说明，不带 exe）
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          next='${{ steps.ver.outputs.next }}'
+          prev='${{ steps.ver.outputs.prev }}'
+          if gh release view "$next" >/dev/null 2>&1; then
+            echo "$next 已存在，跳过"
+            exit 0
+          fi
+          # 没有合并的 PR、且自上个版本以来没有新提交 → 不发版，避免刷版本
+          if [ ! -s /tmp/merged.txt ] && [ -n "$prev" ]; then
+            git fetch --tags --force >/dev/null 2>&1 || true
+            if [ "$(git rev-list --count "$prev"..HEAD 2>/dev/null || echo 0)" = "0" ]; then
+              echo "没有新改动，跳过发版"
+              exit 0
+            fi
+          fi
+          {
+            echo "## 本次更新"
+            echo
+            if [ -s /tmp/merged.txt ]; then
+              cut -d'|' -f2- /tmp/merged.txt | sed 's/^/- /' | head -20
+            elif [ -n "$prev" ]; then
+              git log --oneline "$prev"..HEAD | head -20 | sed 's/^/- /'
+            else
+              git log --oneline -10 | sed 's/^/- /'
+            fi
+            echo
+            echo "源码包由 GitHub 自动生成；本次发行不含重新打包的 exe。"
+          } > /tmp/notes.md
+          gh release create "$next" --target main --title "$next" --notes-file /tmp/notes.md </dev/null
+
+      - name: 回复已修复的 issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          [ -s /tmp/merged.txt ] || { echo "没有合并的 PR，跳过回复"; exit 0; }
+          marker="自动修复已合入 main"
+          cut -d'|' -f2- /tmp/merged.txt | grep -oE '#[0-9]+' | tr -d '#' | sort -un > /tmp/issues.txt || true
+          while read -r n; do
+            [ -z "$n" ] && continue
+            if gh issue view "$n" --json comments --jq '.comments[].body' 2>/dev/null | grep -qF "$marker"; then
+              echo "issue #$n 已回复过，跳过"
+              continue
+            fi
+            gh issue comment "$n" --body "$marker，改动会随下个自动版本发布。详情见 Release 页面。" </dev/null || true
+          done < /tmp/issues.txt
