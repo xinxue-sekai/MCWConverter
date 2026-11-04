@@ -56,6 +56,32 @@ def _jsonable(obj):
     return obj
 
 
+def _unsafe_member_reason(name):
+    """成员名越界时返回中文原因，安全则返回 None。
+
+    网络分享的存档包可能被人为塞入 ``../`` 或绝对路径，解压后会写到解压目录以外。
+    """
+    normalized = (name or "").replace("\\", "/")
+    if not normalized.strip("./"):
+        return "空文件名"
+    if os.path.isabs(name) or normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        return "绝对路径"
+    if ".." in [part for part in normalized.split("/") if part]:
+        return "包含 .. 的越界路径"
+    return None
+
+
+def _assert_safe_members(names):
+    """解压前统一预检，发现越界成员立即拒绝整包（返回部分解压结果反而更危险）。"""
+    for name in names:
+        reason = _unsafe_member_reason(name)
+        if reason:
+            raise ValueError(
+                f"压缩包含有不安全的成员路径（{reason}）：{name}\n"
+                "为防止覆盖存档目录以外的文件，已拒绝解压，请确认压缩包来源。"
+            )
+
+
 def _extract_archive(archive_path, progress_cb=None):
     """把压缩包解压到临时目录，返回解压目录路径。"""
     ext = os.path.splitext(archive_path)[1].lower()
@@ -65,14 +91,25 @@ def _extract_archive(archive_path, progress_cb=None):
         with tarfile.open(archive_path, "r:*") as tf:
             members = tf.getmembers()
             total = len(members)
+            _assert_safe_members(m.name for m in members)
+            for member in members:
+                if member.islnk() or member.issym() or member.isdev():
+                    raise ValueError(
+                        f"压缩包含有链接或设备文件（{member.name}），已拒绝解压。"
+                    )
             for i, member in enumerate(members):
-                tf.extract(member, tmp_dir)
+                if hasattr(tarfile, "data_filter"):
+                    tf.extract(member, tmp_dir, filter="data")
+                else:  # Python < 3.12 没有 PEP 706 过滤器，前面的预检兜底
+                    tf.extract(member, tmp_dir)
                 if progress_cb is not None:
                     progress_cb("extract", i + 1, total)
     else:
         with zipfile.ZipFile(archive_path, "r") as zf:
             members = zf.infolist()
             total = len(members)
+            # 注意：zipfile.extract 会剥掉成员名里的 ".." 与盘符，本身不存在穿越，
+            # 因此这里不加校验，保持既有行为不变（见 issue #1 的 zip 分支属误报）。
             for i, member in enumerate(members):
                 zf.extract(member, tmp_dir)
                 if progress_cb is not None:
