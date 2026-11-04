@@ -32,6 +32,22 @@ def _tag_int(tag):
         return None
 
 
+def coerce_seed(value):
+    """把外部来源的种子值收敛成整数；拿不到数字时按 0 处理。
+
+    转换已经成功、只剩重建 level.dat 时，这里没有兜底的后果是整步抛异常并被
+    外层的 ``except`` 吞掉，产物留下一个不完整的 level.dat —— 不如按 0 继续。
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def read_seed(world_dir):
     """从源世界 level.dat 读取种子（保持未探索区域地形连续性）。
 
@@ -104,7 +120,7 @@ def build_level_dat(out_dir, world_name, seed, data_version, target_version):
         data_version = 3700
     if target_version is None:
         target_version = (1, 20, 4)
-    seed = int(seed)
+    seed = coerce_seed(seed)
 
     Data = CompoundTag()
     Data["version"] = IntTag(LEGACY_WORLD_VERSION)
