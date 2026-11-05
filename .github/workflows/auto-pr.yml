@@ -1,8 +1,9 @@
-name: 自动建 PR 并收尾（triage 分支推送触发）
+name: 自动合并修复并收尾（triage 分支推送触发）
 
 # 触发时机：本流程把修复推到 triage/* 分支时。
-# 动作：建 PR → squash 合并 → 发下一个源码版本 → 回复并关闭对应 issue。
-# 分支名必须是 triage/issue-<n> 形式，commit 标题必须含 (#<issue号>)，否则不会回 issue。
+# 动作：squash 合并进 main → 发下一个源码版本 → 回复并关闭对应 issue。
+# 不建 PR（GitHub 默认禁止 Actions 自建 PR），直接本地 squash 合并后 push main。
+# commit 标题必须含 (#<issue号>)，否则不会回 issue、也不会关 issue。
 
 on:
   push:
@@ -11,8 +12,8 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
   issues: write
+  pull-requests: write
 
 concurrency:
   group: auto-finalize
@@ -27,36 +28,37 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 建 PR 并 squash 合并
-        id: pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: squash 合并进 main
+        id: merge
         run: |
           set -e
           BRANCH="${GITHUB_REF#refs/heads/}"
           SUBJECT="$(git log -1 --format=%s)"
-          echo "branch=$BRANCH title=$SUBJECT"
-          if [ "$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')" != "0" ]; then
-            NUM=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
-          else
-            URL=$(gh pr create --head "$BRANCH" --base main --title "$SUBJECT" \
-              --body "自动修复，来自分支 ${BRANCH}。" </dev/null)
-            NUM=$(printf '%s' "$URL" | grep -oE '[0-9]+$' | tail -1)
-          fi
-          [ -n "$NUM" ] || { echo "拿不到 PR 号"; exit 1; }
-          gh pr merge "$NUM" --squash </dev/null
-          git push origin --delete "$BRANCH" >/dev/null 2>&1 || true
+          echo "branch=$BRANCH"
           echo "title=$SUBJECT" >> "$GITHUB_OUTPUT"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main --quiet
+          git checkout -B main "origin/main" --quiet
+          git merge --squash "origin/${BRANCH}" >/dev/null
+          if git diff --cached --quiet; then
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            echo "分支没有实际改动，跳过"
+          else
+            git commit -m "$SUBJECT" --quiet
+            git push origin main --quiet
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            echo "已合并：$SUBJECT"
+          fi
+          git push origin --delete "$BRANCH" >/dev/null 2>&1 || true
 
-      - name: 同步 main 并计算版本号
+      - name: 计算版本号
+        if: steps.merge.outputs.merged == 'true'
         id: ver
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          git fetch origin main --tags --force >/dev/null 2>&1
-          git checkout main >/dev/null 2>&1
-          git reset --hard origin/main >/dev/null
           prev=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
           case "$prev" in
             v[0-9]*.[0-9]*.[0-9]*)
@@ -68,23 +70,25 @@ jobs:
           echo "next=$next" >> "$GITHUB_OUTPUT"
 
       - name: 发新版本（源码 tag，不含 exe）
+        if: steps.merge.outputs.merged == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           next='${{ steps.ver.outputs.next }}'
-          title='${{ steps.pr.outputs.title }}'
+          title='${{ steps.merge.outputs.title }}'
           gh release view "$next" >/dev/null 2>&1 && { echo "$next 已存在，跳过"; exit 0; }
           { echo "## 本次更新"; echo; echo "- $title"; echo;
             echo "源码包由 GitHub 自动生成；本次发行不含重新打包的 exe。"; } > /tmp/notes.md
           gh release create "$next" --target main --title "$next" --notes-file /tmp/notes.md </dev/null
 
       - name: 回复并关闭对应 issue
+        if: steps.merge.outputs.merged == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          title='${{ steps.pr.outputs.title }}'
+          title='${{ steps.merge.outputs.title }}'
           marker="自动修复已合入 main"
           printf '%s' "$title" | grep -oE '#[0-9]+' | tr -d '#' | sort -un > /tmp/issues.txt || true
           [ -s /tmp/issues.txt ] || { echo "标题里没有 issue 号，跳过回复"; exit 0; }
