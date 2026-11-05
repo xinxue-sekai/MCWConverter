@@ -1,9 +1,8 @@
 name: 自动合并修复并收尾（triage 分支推送触发）
 
-# 触发时机：本流程把修复推到 triage/* 分支时。
-# 动作：squash 合并进 main → 发下一个源码版本 → 回复并关闭对应 issue。
+# 触发时机：本流程把修复推到 triage/* 分支时（一晚一个批次分支，可含多个提交）。
+# 动作：squash 合并进 main → 发一个 patch 版本 → 回复并关闭分支里提到的所有 issue。
 # 不建 PR（GitHub 默认禁止 Actions 自建 PR），直接本地 squash 合并后 push main。
-# commit 标题必须含 (#<issue号>)，否则不会回 issue、也不会关 issue。
 
 on:
   push:
@@ -33,22 +32,31 @@ jobs:
         run: |
           set -e
           BRANCH="${GITHUB_REF#refs/heads/}"
-          SUBJECT="$(git log -1 --format=%s)"
-          echo "branch=$BRANCH"
-          echo "title=$SUBJECT" >> "$GITHUB_OUTPUT"
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main --quiet
           git checkout -B main "origin/main" --quiet
+
+          # 分支上相对 main 的所有提交标题（一个 issue 一条）
+          git log --reverse --format=%s "origin/main..origin/${BRANCH}" > /tmp/subjects.txt
+          [ -s /tmp/subjects.txt ] || { echo "分支没有提交，退出"; exit 0; }
+          cat /tmp/subjects.txt
+
+          # 汇总 issue 号与合并提交标题
+          ISSUES=$(grep -oE '#[0-9]+' /tmp/subjects.txt | sort -u | tr '\n' ' ' || true)
+          echo "issues=$ISSUES" >> "$GITHUB_OUTPUT"
+          head -1 /tmp/subjects.txt > /tmp/title.txt
+          { echo "$(head -1 /tmp/subjects.txt)"; echo; sed 's/^/- /' /tmp/subjects.txt; } > /tmp/msg.txt
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git merge --squash "origin/${BRANCH}" >/dev/null
           if git diff --cached --quiet; then
             echo "merged=false" >> "$GITHUB_OUTPUT"
-            echo "分支没有实际改动，跳过"
+            echo "没有实际改动，跳过"
           else
-            git commit -m "$SUBJECT" --quiet
+            git commit -F /tmp/msg.txt --quiet
             git push origin main --quiet
             echo "merged=true" >> "$GITHUB_OUTPUT"
-            echo "已合并：$SUBJECT"
+            echo "已合并：$ISSUES"
           fi
           git push origin --delete "$BRANCH" >/dev/null 2>&1 || true
 
@@ -76,9 +84,8 @@ jobs:
         run: |
           set -e
           next='${{ steps.ver.outputs.next }}'
-          title='${{ steps.merge.outputs.title }}'
           gh release view "$next" >/dev/null 2>&1 && { echo "$next 已存在，跳过"; exit 0; }
-          { echo "## 本次更新"; echo; echo "- $title"; echo;
+          { echo "## 本次更新"; echo; sed 's/^/- /' /tmp/subjects.txt; echo;
             echo "源码包由 GitHub 自动生成；本次发行不含重新打包的 exe。"; } > /tmp/notes.md
           gh release create "$next" --target main --title "$next" --notes-file /tmp/notes.md </dev/null
 
@@ -88,12 +95,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          title='${{ steps.merge.outputs.title }}'
+          issues='${{ steps.merge.outputs.issues }}'
+          [ -n "$issues" ] || { echo "没有 issue 号，跳过"; exit 0; }
           marker="自动修复已合入 main"
-          printf '%s' "$title" | grep -oE '#[0-9]+' | tr -d '#' | sort -un > /tmp/issues.txt || true
-          [ -s /tmp/issues.txt ] || { echo "标题里没有 issue 号，跳过回复"; exit 0; }
-          while read -r n; do
-            [ -z "$n" ] && continue
-            gh issue comment "$n" --body "$marker，改动已随自动版本发布，本 issue 一并关闭。" </dev/null || true
-            gh issue close "$n" --reason completed </dev/null || true
-          done < /tmp/issues.txt
+          for n in $issues; do
+            num="${n#\#}"
+            [ -z "$num" ] && continue
+            gh issue comment "$num" --body "$marker，改动已随自动版本发布，本 issue 一并关闭。" </dev/null || true
+            gh issue close "$num" --reason completed </dev/null || true
+          done
