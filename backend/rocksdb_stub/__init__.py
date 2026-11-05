@@ -52,6 +52,7 @@ class RocksDB:
     def __init__(self, path, options=None, write_options=None, read_only=False):
         self.path = os.fspath(path)
         self._data = {}
+        self._dirty = False
         if not read_only:
             os.makedirs(self.path, exist_ok=True)
         self.read_only = read_only
@@ -70,12 +71,16 @@ class RocksDB:
         if self.read_only:
             raise IOError("read-only")
         self._data[bytes(key)] = bytes(value)
+        self._dirty = True
 
     def get(self, key, *args, **kwargs):
         return self._data.get(bytes(key))
 
     def delete(self, key, *args, **kwargs):
-        self._data.pop(bytes(key), None)
+        k = bytes(key)
+        if k in self._data:
+            del self._data[k]
+            self._dirty = True
 
     def iterator(self, *args, **kwargs):
         return iter(sorted(self._data.items()))
@@ -87,8 +92,12 @@ class RocksDB:
         pass
 
     def close(self, *args, **kwargs):
+        # 只读打开不得产生写盘副作用；没有改动过也不必重写旧缓存
+        if self.read_only or not self._dirty:
+            return
         try:
             with open(os.path.join(self.path, "db.pkl"), "wb") as fh:
                 pickle.dump(dict(self._data), fh)
         except Exception:
             pass
+        self._dirty = False
