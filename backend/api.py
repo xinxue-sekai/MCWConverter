@@ -23,6 +23,7 @@ import zipfile
 from . import WORK_ROOT
 from . import convert as _convert
 from . import detect as _detect
+from .applog import log_swallowed
 
 
 #: 支持的存档压缩包扩展名（不区分大小写）
@@ -182,7 +183,8 @@ class ConverterApi:
                 + "))"
             )
         except Exception:
-            pass
+            # 界面窗口销毁/脚本报错都会走到这里；以前直接吞掉，用户只看到进度条卡住
+            log_swallowed("进度推送失败", payload)
 
     def _on_progress(self, stage, done, total):
         self._emit({"phase": stage, "done": done, "total": total})
@@ -299,6 +301,8 @@ class ConverterApi:
                     self._safe_rmtree(out_dir)
                     if out_dir in self._work_tmp_dirs:
                         self._work_tmp_dirs.remove(out_dir)
+                # 前端只拿得到 str(exc)，完整回溯留到日志里，否则线上排障无从下手
+                log_swallowed(f"转换失败：{exc}")
                 self._emit({"phase": "error", "error": str(exc)})
             finally:
                 self._busy = False
