@@ -1,8 +1,12 @@
-name: 自动合并修复并收尾（triage 分支推送触发）
+name: 自动合并修复并结案（triage 分支推送触发）
 
-# 触发时机：本流程把修复推到 triage/* 分支时（一晚一个批次分支，可含多个提交）。
-# 动作：squash 合并进 main → 发一个 patch 版本 → 回复并关闭分支里提到的所有 issue。
-# 不建 PR（GitHub 默认禁止 Actions 自建 PR），直接本地 squash 合并后 push main。
+# 触发时机：把当晚批次推到 triage/* 分支时（一个批次可含多个提交）。
+# 两类提交分开处理：
+#   fix(<位置>): 一句话描述 (#12)   → squash 合并进 main → 发一个 patch 版本 → 按模板回帖并 close
+#   triage(conclude): 一句话结论     → 不合并、不发版；把提交正文当回复发到正文里 `closes: #12` 指的
+#                                     issue，然后按 not planned 关闭。标题里不许出现 #号，
+#                                     否则会被当成修复提交。
+# 不建 PR（GitHub 默认禁止 Actions 自建 PR）。
 
 on:
   push:
@@ -27,38 +31,74 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: squash 合并进 main
-        id: merge
+      - name: 识别本批提交
+        id: scan
         run: |
           set -e
           BRANCH="${GITHUB_REF#refs/heads/}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           git fetch origin main --quiet
-          git checkout -B main "origin/main" --quiet
+          RANGE="origin/main..origin/${BRANCH}"
 
-          # 分支上相对 main 的所有提交标题（一个 issue 一条）
-          git log --reverse --format=%s "origin/main..origin/${BRANCH}" > /tmp/subjects.txt
-          [ -s /tmp/subjects.txt ] || { echo "分支没有提交，退出"; exit 0; }
-          cat /tmp/subjects.txt
+          git log --reverse --format='%H%x09%s' "$RANGE" > /tmp/commits.tsv
+          if [ ! -s /tmp/commits.tsv ]; then
+            echo "分支没有提交，退出"; echo "empty=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          cat /tmp/commits.tsv
 
-          # 汇总 issue 号与合并提交标题
-          ISSUES=$(grep -oE '#[0-9]+' /tmp/subjects.txt | sort -u | tr '\n' ' ' || true)
-          echo "issues=$ISSUES" >> "$GITHUB_OUTPUT"
-          head -1 /tmp/subjects.txt > /tmp/title.txt
-          { echo "$(head -1 /tmp/subjects.txt)"; echo; sed 's/^/- /' /tmp/subjects.txt; } > /tmp/msg.txt
+          # 结论提交 = 标题以 triage(conclude) 开头
+          awk -F'\t' '$2 ~ /^triage\(conclude\)/ {print $1}' /tmp/commits.tsv > /tmp/conclude.sha
+          # 修复提交 = 其余提交，取标题里的 #N
+          awk -F'\t' '$2 !~ /^triage\(conclude\)/ {print $2}' /tmp/commits.tsv \
+            | grep -oE '#[0-9]+' | tr -d '#' | sort -un | tr '\n' ' ' > /tmp/fix_issues.txt || true
+          # 结论提交指向的 issue 号（正文里 `closes: #N`）
+          : > /tmp/close_issues.txt
+          while read -r sha; do
+            [ -z "$sha" ] && continue
+            git log -1 --format=%B "$sha" \
+              | grep -oiE '^closes:[[:space:]]*#[0-9]+' | grep -oE '[0-9]+' >> /tmp/close_issues.txt || true
+          done < /tmp/conclude.sha
+          sort -un /tmp/close_issues.txt -o /tmp/close_issues.txt
 
+          # 结论提交不许带代码改动；同一 issue 不许既修又判
+          while read -r sha; do
+            [ -z "$sha" ] && continue
+            if git diff-tree --no-commit-id --name-only -r "$sha" | grep -q .; then
+              echo "::error::结论提交 ${sha:0:8} 带了文件改动，拒绝执行"; exit 1
+            fi
+          done < /tmp/conclude.sha
+          if [ -s /tmp/conclude.sha ]; then
+            for f in $(cat /tmp/fix_issues.txt); do
+              if grep -qx "$f" /tmp/close_issues.txt; then
+                echo "::error::issue ${f} 同时出现在修复提交和结论提交里"; exit 1
+              fi
+            done
+          fi
+
+          # 合并提交标题（只取修复提交；结论提交不进 release 说明）
+          awk -F'\t' '$2 !~ /^triage\(conclude\)/ {print $2}' /tmp/commits.tsv > /tmp/subjects.txt
+          echo "fixIssues=$(cat /tmp/fix_issues.txt)" >> "$GITHUB_OUTPUT"
+          echo "closeIssues=$(tr '\n' ' ' < /tmp/close_issues.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: squash 合并进 main
+        if: steps.scan.outputs.empty != 'true' && steps.scan.outputs.fixIssues != ''
+        id: merge
+        run: |
+          set -e
+          BRANCH='${{ steps.scan.outputs.branch }}'
+          git checkout -B main origin/main --quiet
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git merge --squash "origin/${BRANCH}" >/dev/null
           if git diff --cached --quiet; then
-            echo "merged=false" >> "$GITHUB_OUTPUT"
-            echo "没有实际改动，跳过"
+            echo "merged=false" >> "$GITHUB_OUTPUT"; echo "没有实际改动，跳过合并"
           else
+            { echo "$(head -1 /tmp/subjects.txt)"; echo; sed 's/^/- /' /tmp/subjects.txt; } > /tmp/msg.txt
             git commit -F /tmp/msg.txt --quiet
             git push origin main --quiet
             echo "merged=true" >> "$GITHUB_OUTPUT"
-            echo "已合并：$ISSUES"
+            echo "已合并：$(cat /tmp/subjects.txt)"
           fi
-          git push origin --delete "$BRANCH" >/dev/null 2>&1 || true
 
       - name: 计算版本号
         if: steps.merge.outputs.merged == 'true'
@@ -89,18 +129,47 @@ jobs:
             echo "源码包由 GitHub 自动生成；本次发行不含重新打包的 exe。"; } > /tmp/notes.md
           gh release create "$next" --target main --title "$next" --notes-file /tmp/notes.md </dev/null
 
-      - name: 回复并关闭对应 issue
+      - name: 回帖并关闭已修复的 issue
         if: steps.merge.outputs.merged == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          issues='${{ steps.merge.outputs.issues }}'
-          [ -n "$issues" ] || { echo "没有 issue 号，跳过"; exit 0; }
-          marker="自动修复已合入 main"
-          for n in $issues; do
-            num="${n#\#}"
-            [ -z "$num" ] && continue
-            gh issue comment "$num" --body "$marker，改动已随自动版本发布，本 issue 一并关闭。" </dev/null || true
+          issues='${{ steps.scan.outputs.fixIssues }}'
+          [ -n "$issues" ] || { echo "没有修复类 issue，跳过"; exit 0; }
+          for num in $issues; do
+            gh issue comment "$num" --body "自动修复已合入 main，改动已随自动版本发布，本 issue 一并关闭。" </dev/null || true
             gh issue close "$num" --reason completed </dev/null || true
           done
+
+      - name: 回帖并关闭判定不修的 issue
+        if: steps.scan.outputs.empty != 'true' && steps.scan.outputs.closeIssues != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          while read -r sha; do
+            [ -z "$sha" ] && continue
+            num=$(git log -1 --format=%b "$sha" | grep -oiE '^closes:[[:space:]]*#[0-9]+' | grep -oE '[0-9]+' | head -1)
+            [ -n "$num" ] || continue
+            # 回帖正文 = 提交正文去掉 closes 行；正文为空就退回标题（去掉标记前缀），保证一定有话说
+            git log -1 --format=%b "$sha" | grep -viE '^closes:[[:space:]]*#[0-9]+' \
+              | awk 'NF {f=1} f' \
+              | awk '{a[NR]=$0} END {n=NR; while (n>0 && a[n]=="") n--; for (i=1;i<=n;i++) print a[i]}' \
+              > /tmp/body.md
+            if [ ! -s /tmp/body.md ]; then
+              git log -1 --format=%s "$sha" \
+                | sed -E 's/^triage\(conclude\)[[:space:]:：]*//' > /tmp/body.md
+            fi
+            # 统一补一句可 reopen，语气由模型写、兜底由工作流保证
+            printf '\n---\n此结论来自自动审查，如不认同可以直接 reopen 本条 issue，次日会重新判断。\n' >> /tmp/body.md
+            gh issue comment "$num" --body-file /tmp/body.md </dev/null
+            gh issue close "$num" --reason "not planned" </dev/null
+            echo "已结案 #$num"
+          done < /tmp/conclude.sha
+
+      - name: 删除批次分支
+        if: steps.scan.outputs.empty != 'true'
+        run: |
+          set -e
+          git push origin --delete '${{ steps.scan.outputs.branch }}' >/dev/null 2>&1 || true
